@@ -1,6 +1,6 @@
 from setuptools import setup
 
-package_name = 'map_publisher_ros2'
+package_name = 'map_overlay_ros2'
 
 setup(
     name=package_name,
@@ -25,7 +25,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'map_publisher_node = map_publisher_ros2.map_publisher_node:main',
+            'map_publisher_node = map_overlay_ros2.map_publisher_node:main',
         ],
     },
 )
