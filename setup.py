@@ -25,7 +25,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'map_publisher_node = map_overlay_ros2.map_publisher_node:main',
+            'map_overlay_node = map_overlay_ros2.map_overlay_node:main',
         ],
     },
 )

@@ -26,7 +26,7 @@ class MapPublisherNode(Node):
     """ROS2 node that publishes satellite map imagery."""
 
     def __init__(self):
-        super().__init__('map_publisher_node')
+        super().__init__('map_overlay_node')
 
         # Declare parameters
         self.declare_parameter('coverage_meters', 500)
@@ -80,12 +80,12 @@ class MapPublisherNode(Node):
         # Publishers
         self.image_pub = self.create_publisher(
             Image,
-            '/map_publisher/satellite_image',
+            '/map_overlay/satellite_image',
             10
         )
         self.metadata_pub = self.create_publisher(
             String,
-            '/map_publisher/map_metadata',
+            '/map_overlay/map_metadata',
             10
         )
 
