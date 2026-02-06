@@ -280,7 +280,8 @@ class MapPublisherNode(Node):
                 (self.image_size, self.image_size),
                 center_lat=lat,
                 center_lon=lon,
-                zoom=zoom
+                zoom=zoom,
+                coverage_meters=self.coverage_meters
             )
 
             # Add center marker if requested

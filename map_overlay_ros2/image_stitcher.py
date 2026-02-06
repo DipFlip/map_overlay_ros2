@@ -31,7 +31,8 @@ class ImageStitcher:
             print(f"[{level.upper()}] {message}")
 
     def stitch_tiles(self, tiles, tile_bounds, output_size=(1024, 1024),
-                      center_lat=None, center_lon=None, zoom=None):
+                      center_lat=None, center_lon=None, zoom=None,
+                      coverage_meters=None):
         """
         Stitch tiles into a single image, crop to center on GPS coords, and resize.
 
@@ -42,6 +43,8 @@ class ImageStitcher:
             center_lat: GPS latitude to center the image on (optional)
             center_lon: GPS longitude to center the image on (optional)
             zoom: Tile zoom level (required if center_lat/lon provided)
+            coverage_meters: Desired ground coverage in meters (used to compute
+                             correct crop size; if None, falls back to canvas size)
 
         Returns:
             PIL.Image: Stitched, centered, and resized image
@@ -96,9 +99,17 @@ class ImageStitcher:
             center_px_x = (tile_x_exact - min_x) * self.tile_size
             center_px_y = (tile_y_exact - min_y) * self.tile_size
 
-            # Calculate crop box centered on GPS point
-            # Use the smaller dimension to ensure we get a square crop
-            crop_size = min(canvas_width, canvas_height)
+            # Calculate crop size: use coverage_meters to compute the exact
+            # number of tile-level pixels that correspond to the desired ground
+            # coverage, rather than using the full canvas size (which caused
+            # off-center crops when the GPS point wasn't at the canvas center)
+            if coverage_meters is not None:
+                meters_per_pixel = 156543.03392 * math.cos(math.radians(center_lat)) / (2 ** zoom)
+                crop_size = int(coverage_meters / meters_per_pixel)
+                # Clamp to canvas size as a safety bound
+                crop_size = min(crop_size, canvas_width, canvas_height)
+            else:
+                crop_size = min(canvas_width, canvas_height)
             half_size = crop_size // 2
 
             left = int(center_px_x - half_size)

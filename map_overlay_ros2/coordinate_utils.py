@@ -127,7 +127,7 @@ def calculate_optimal_zoom(width_m, image_size=1024, lat=0):
     return zoom
 
 
-def get_tile_bounds(center_lat, center_lon, width_m, height_m, zoom):
+def get_tile_bounds(center_lat, center_lon, width_m, height_m, zoom, padding=1):
     """
     Calculate which tiles are needed to cover a geographic area.
 
@@ -137,6 +137,8 @@ def get_tile_bounds(center_lat, center_lon, width_m, height_m, zoom):
         width_m: Width in meters
         height_m: Height in meters
         zoom: Zoom level
+        padding: Extra tiles to fetch on each side (ensures the GPS center
+                 has enough canvas room for a properly centered crop)
 
     Returns:
         dict: {
@@ -154,11 +156,13 @@ def get_tile_bounds(center_lat, center_lon, width_m, height_m, zoom):
     min_tile_x, max_tile_y = lat_lon_to_tile(bbox['min_lat'], bbox['min_lon'], zoom)
     max_tile_x, min_tile_y = lat_lon_to_tile(bbox['max_lat'], bbox['max_lon'], zoom)
 
+    # Add padding tiles so the GPS center point always has enough canvas
+    # on all sides for a properly centered crop (avoids clamping offset)
     return {
-        'min_tile_x': min_tile_x,
-        'max_tile_x': max_tile_x,
-        'min_tile_y': min_tile_y,
-        'max_tile_y': max_tile_y,
+        'min_tile_x': min_tile_x - padding,
+        'max_tile_x': max_tile_x + padding,
+        'min_tile_y': min_tile_y - padding,
+        'max_tile_y': max_tile_y + padding,
         'zoom': zoom
     }
 
