@@ -6,7 +6,10 @@ Subscribes to GPS data and publishes satellite imagery as a ROS2 Image message.
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import NavSatFix, Image
+from geometry_msgs.msg import PointStamped
+from geographic_msgs.msg import GeoPoseStamped
 from std_msgs.msg import String
 from cv_bridge import CvBridge
 import json
@@ -37,7 +40,7 @@ class MapPublisherNode(Node):
         self.declare_parameter('cache_dir', '/tmp/map_tiles')
         self.declare_parameter('add_center_marker', True)
         self.declare_parameter('publish_rate_hz', 0.1)  # Once every 10 seconds
-        self.declare_parameter('gps_topic', '/gps/fix')  # GPS topic to subscribe to
+        self.declare_parameter('gps_topic', '/mavros/global_position/global')  # GPS topic to subscribe to
         self.declare_parameter('fetch_once_at_origin', True)  # New: only fetch map once
 
         # Get parameters
@@ -64,17 +67,50 @@ class MapPublisherNode(Node):
         # State variables
         self.center_lat = None
         self.center_lon = None
+        self.origin_lat = None  # Origin from rtk2tf2
+        self.origin_lon = None
         self.last_published_position = None
         self.last_published_image = None
         self.map_metadata = None
         self.map_fetched = False  # Track if we've fetched the origin map
 
-        # Subscribers
+        # QoS profile for sensor data (best effort to match mavros publishers)
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+
+        # QoS for transient_local topics (latched, like /flight_origin_latlon)
+        origin_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+
+        # Subscribe to geo_datum from rtk2tf2 (primary source for origin)
+        self.geo_datum_sub = self.create_subscription(
+            GeoPoseStamped,
+            '/geo_datum',
+            self.geo_datum_callback,
+            origin_qos
+        )
+
+        # Subscribe to flight origin from rtk2tf2 (legacy, for backwards compatibility)
+        self.origin_sub = self.create_subscription(
+            PointStamped,
+            '/flight_origin_latlon',
+            self.origin_callback,
+            origin_qos
+        )
+
+        # Subscribers for GPS (only used if not using origin from rtk2tf2)
         self.gps_sub = self.create_subscription(
             NavSatFix,
             self.gps_topic,
             self.gps_callback,
-            10
+            sensor_qos
         )
 
         # Publishers
@@ -104,10 +140,63 @@ class MapPublisherNode(Node):
         self.get_logger().info(f'  Update on movement: {self.update_on_movement}')
         self.get_logger().info(f'  Movement threshold: {self.movement_threshold}m')
         self.get_logger().info(f'  Publish rate: {self.publish_rate} Hz')
+        self.get_logger().info('  Waiting for origin from /geo_datum or /flight_origin_latlon...')
         self.get_logger().info('=' * 60)
 
+    def geo_datum_callback(self, msg):
+        """Handle origin coordinates from rtk2tf2 via GeoPoseStamped (primary source)."""
+        lat = msg.pose.position.latitude
+        lon = msg.pose.position.longitude
+
+        # Check if position is valid
+        if lat == 0.0 and lon == 0.0:
+            self.get_logger().warn('Invalid geo_datum position (0, 0), skipping')
+            return
+
+        # Only process once
+        if self.origin_lat is not None:
+            return
+
+        self.origin_lat = lat
+        self.origin_lon = lon
+        self.get_logger().info(f'Received origin from /geo_datum: ({lat:.8f}, {lon:.8f})')
+
+        # Fetch the map centered on this origin
+        if not self.map_fetched:
+            self.fetch_and_publish_map(lat, lon)
+
+    def origin_callback(self, msg):
+        """Handle origin coordinates from rtk2tf2 (authoritative origin)."""
+        # PointStamped: point.x = longitude, point.y = latitude, point.z = altitude
+        lat = msg.point.y
+        lon = msg.point.x
+
+        # Check if position is valid
+        if lat == 0.0 and lon == 0.0:
+            self.get_logger().warn('Invalid origin position (0, 0), skipping')
+            return
+
+        # Only process once
+        if self.origin_lat is not None:
+            return
+
+        self.origin_lat = lat
+        self.origin_lon = lon
+        self.get_logger().info(f'Received origin from rtk2tf2: ({lat:.8f}, {lon:.8f})')
+
+        # Fetch the map centered on this origin
+        if not self.map_fetched:
+            self.fetch_and_publish_map(lat, lon)
+
     def gps_callback(self, msg):
-        """Handle incoming GPS fix messages."""
+        """Handle incoming GPS fix messages (fallback if no origin received)."""
+        # If we already have origin from rtk2tf2, ignore GPS for origin purposes
+        if self.origin_lat is not None:
+            # Just update current position for movement tracking
+            self.center_lat = msg.latitude
+            self.center_lon = msg.longitude
+            return
+
         # Check for valid fix
         if msg.status.status < 0:
             self.get_logger().warn('No GPS fix, skipping map update')
@@ -125,8 +214,10 @@ class MapPublisherNode(Node):
         self.center_lat = lat
         self.center_lon = lon
 
-        # Check if we should fetch new map
+        # Only fetch from GPS if we haven't received origin from rtk2tf2
+        # This is a fallback - prefer origin from rtk2tf2
         if self.should_update_map(lat, lon):
+            self.get_logger().warn('Using GPS directly (no origin from rtk2tf2 yet)')
             self.fetch_and_publish_map(lat, lon)
 
     def should_update_map(self, lat, lon):
@@ -182,11 +273,14 @@ class MapPublisherNode(Node):
                 self.get_logger().error('No tiles fetched, cannot create map')
                 return
 
-            # Stitch tiles into single image
+            # Stitch tiles into single image, centered on the GPS point
             stitched_image = self.image_stitcher.stitch_tiles(
                 tiles,
                 tile_bounds,
-                (self.image_size, self.image_size)
+                (self.image_size, self.image_size),
+                center_lat=lat,
+                center_lon=lon,
+                zoom=zoom
             )
 
             # Add center marker if requested

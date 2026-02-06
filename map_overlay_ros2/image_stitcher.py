@@ -30,18 +30,24 @@ class ImageStitcher:
         else:
             print(f"[{level.upper()}] {message}")
 
-    def stitch_tiles(self, tiles, tile_bounds, output_size=(1024, 1024)):
+    def stitch_tiles(self, tiles, tile_bounds, output_size=(1024, 1024),
+                      center_lat=None, center_lon=None, zoom=None):
         """
-        Stitch tiles into a single image and resize to output size.
+        Stitch tiles into a single image, crop to center on GPS coords, and resize.
 
         Args:
             tiles: Dict mapping (tile_x, tile_y) -> PIL.Image
             tile_bounds: Dict with min_tile_x, max_tile_x, min_tile_y, max_tile_y
             output_size: Tuple (width, height) for final output image
+            center_lat: GPS latitude to center the image on (optional)
+            center_lon: GPS longitude to center the image on (optional)
+            zoom: Tile zoom level (required if center_lat/lon provided)
 
         Returns:
-            PIL.Image: Stitched and resized image
+            PIL.Image: Stitched, centered, and resized image
         """
+        import math
+
         min_x = tile_bounds['min_tile_x']
         max_x = tile_bounds['max_tile_x']
         min_y = tile_bounds['min_tile_y']
@@ -78,9 +84,53 @@ class ImageStitcher:
 
         self._log(f"Placed {placed_count}/{len(tiles)} tiles on canvas")
 
+        # If center coordinates provided, crop to center on the GPS point
+        if center_lat is not None and center_lon is not None and zoom is not None:
+            # Calculate exact tile coordinates for the center point
+            lat_rad = math.radians(center_lat)
+            n = 2.0 ** zoom
+            tile_x_exact = (center_lon + 180.0) / 360.0 * n
+            tile_y_exact = (1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n
+
+            # Calculate pixel position of GPS center on the canvas
+            center_px_x = (tile_x_exact - min_x) * self.tile_size
+            center_px_y = (tile_y_exact - min_y) * self.tile_size
+
+            # Calculate crop box centered on GPS point
+            # Use the smaller dimension to ensure we get a square crop
+            crop_size = min(canvas_width, canvas_height)
+            half_size = crop_size // 2
+
+            left = int(center_px_x - half_size)
+            top = int(center_px_y - half_size)
+            right = left + crop_size
+            bottom = top + crop_size
+
+            # Clamp to canvas bounds
+            if left < 0:
+                right -= left
+                left = 0
+            if top < 0:
+                bottom -= top
+                top = 0
+            if right > canvas_width:
+                left -= (right - canvas_width)
+                right = canvas_width
+            if bottom > canvas_height:
+                top -= (bottom - canvas_height)
+                bottom = canvas_height
+
+            # Ensure we don't go negative after clamping
+            left = max(0, left)
+            top = max(0, top)
+
+            self._log(f"Cropping to center GPS point: ({left}, {top}) to ({right}, {bottom})")
+            canvas = canvas.crop((left, top, right, bottom))
+
         # Resize to output size
-        if (canvas_width, canvas_height) != output_size:
-            self._log(f"Resizing from {canvas_width}x{canvas_height} to {output_size[0]}x{output_size[1]}")
+        current_size = canvas.size
+        if current_size != output_size:
+            self._log(f"Resizing from {current_size[0]}x{current_size[1]} to {output_size[0]}x{output_size[1]}")
             # Use LANCZOS for high-quality resizing (compatible with older Pillow)
             try:
                 canvas = canvas.resize(output_size, Image.Resampling.LANCZOS)
